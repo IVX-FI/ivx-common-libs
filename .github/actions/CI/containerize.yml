@@ -1,0 +1,124 @@
+name: 'CI'
+description: 'Build docker image and push it to ECR'
+inputs:
+  app-name:
+    description: 'App name to deploy'
+    required: true
+    default: ''
+  env: 
+    description: 'Environment/Stage deploying to'
+    required: true
+    default: 'dev'
+  aws-region: 
+    description: 'aws region'
+    required: true
+    default: 'eu-west-1'
+  role-to-assume:
+    description: 'aws role to assume arn'
+    required: true
+    default: 'arn'
+  dockerfile-path: 
+    description: 'Docker file dir'
+    required: true
+    default: './'
+  dockerfile-name:
+    description: 'Docker file name'
+    required: true
+    default: 'Dockerfile'
+  build-args:
+    description: 'JSON string of build arguments key-value pairs'
+    required: false
+    default: '{}'
+  ecr-repository:
+    description: 'aws ecr repository'
+    required: true
+    default: 'ec2'
+
+
+outputs:
+  docker-image:
+    description: 'Docker image full name'
+    value: ${{ steps.set-docker-image.outputs.docker-image }}
+
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Set cache paths
+      id: set-cache-paths
+      shell: bash
+      run: |
+        if [ "${{ inputs.build-args }}" != "{}" ] && [ -n "${{ inputs.build-args }}" ]; then
+          echo "cache-path=/tmp/${{ inputs.env }}/${{ inputs.app-name }}/.buildx-cache" >> $GITHUB_OUTPUT
+          echo "cache-key=${{ runner.os }}-buildx-${{ inputs.env }}-${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "cache-restore-keys=${{ runner.os }}-buildx-${{ inputs.env }}-" >> $GITHUB_OUTPUT
+          echo "cache-from=type=local,src=/tmp/${{ inputs.env }}/${{ inputs.app-name }}/.buildx-cache" >> $GITHUB_OUTPUT
+          echo "cache-to=type=local,dest=/tmp/${{ inputs.env }}/${{ inputs.app-name }}/.buildx-cache-new" >> $GITHUB_OUTPUT
+          echo "cache-cleanup-old=/tmp/${{ inputs.env }}/${{ inputs.app-name }}/.buildx-cache" >> $GITHUB_OUTPUT
+          echo "cache-cleanup-new=/tmp/${{ inputs.env }}/${{ inputs.app-name }}/.buildx-cache-new" >> $GITHUB_OUTPUT
+          echo "cache-cleanup-final=/tmp/${{ inputs.env }}/${{ inputs.app-name }}/.buildx-cache" >> $GITHUB_OUTPUT
+        else
+          echo "cache-path=/tmp/${{ inputs.app-name }}/.buildx-cache" >> $GITHUB_OUTPUT
+          echo "cache-key=${{ runner.os }}-buildx-${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "cache-restore-keys=${{ runner.os }}-buildx-" >> $GITHUB_OUTPUT
+          echo "cache-from=type=local,src=/tmp/${{ inputs.app-name }}/.buildx-cache" >> $GITHUB_OUTPUT
+          echo "cache-to=type=local,dest=/tmp/${{ inputs.app-name }}/.buildx-cache-new" >> $GITHUB_OUTPUT
+          echo "cache-cleanup-old=/tmp/${{ inputs.app-name }}/.buildx-cache" >> $GITHUB_OUTPUT
+          echo "cache-cleanup-new=/tmp/${{ inputs.app-name }}/.buildx-cache-new" >> $GITHUB_OUTPUT
+          echo "cache-cleanup-final=/tmp/${{ inputs.app-name }}/.buildx-cache" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Cache Docker layers
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.set-cache-paths.outputs.cache-path }}
+        key: ${{ steps.set-cache-paths.outputs.cache-key }}
+        restore-keys: |
+          ${{ steps.set-cache-paths.outputs.cache-restore-keys }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-to-assume }}
+        aws-region: ${{ inputs.aws-region }}
+        role-session-name: GitHub-OIDC-TERRAFORM
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - id: set-docker-image
+      name: Set Docket image name to outputs and env
+      shell: bash
+      env: 
+        DOCKER_IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ inputs.app-name }}-${{ github.sha }}
+      run: |
+        echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT    
+    
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.dockerfile-path }}
+        file: ${{ inputs.dockerfile-path }}/${{ inputs.dockerfile-name }}
+        push: true
+        outputs: type=image,push=true
+        platforms: linux/amd64
+        tags: |
+          ${{ steps.set-docker-image.outputs.docker-image }}
+        cache-from: ${{ steps.set-cache-paths.outputs.cache-from }}
+        cache-to: ${{ steps.set-cache-paths.outputs.cache-to }}
+        build-args: ${{ inputs.build-args }}
+        provenance: false
+        sbom: false
+
+    - name: Move Docker cache
+      shell: bash
+      run: |
+        rm -rf ${{ steps.set-cache-paths.outputs.cache-cleanup-old }}
+        mv ${{ steps.set-cache-paths.outputs.cache-cleanup-new }} ${{ steps.set-cache-paths.outputs.cache-cleanup-final }}
