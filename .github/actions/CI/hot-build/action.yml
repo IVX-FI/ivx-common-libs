@@ -1,0 +1,58 @@
+name: "Hot Build"
+description: "Retreive already build docker image from ECR"
+
+inputs:
+  cluster-name:
+    required: true
+    type: string
+  service-name:
+    required: true
+    type: string
+  aws-region:
+    required: true
+    type: string
+  role-to-assume:
+    description: "AWS IAM role ARN to assume for authentication"
+    required: true
+    type: string
+
+outputs:
+  docker-image:
+    description: "Docker image full name"
+    value: ${{ steps.get-image.outputs.current-image }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-to-assume }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - id: get-image
+      name: Get current ECR image from ECS service
+      shell: bash
+      run: |
+        echo "Getting current ECR image for service: ${{ inputs.service-name }}"
+
+        # Get the current task definition ARN from the ECS service
+        TASK_DEF_ARN=$(aws ecs describe-services \
+          --cluster ${{ inputs.cluster-name }} \
+          --services ${{ inputs.service-name }} \
+          --query 'services[0].taskDefinition' \
+          --output text \
+          --region ${{ inputs.aws-region }})
+          
+
+        echo "Current task definition: $TASK_DEF_ARN"
+
+        # Get the ECR image from the task definition
+        CURRENT_IMAGE=$(aws ecs describe-task-definition \
+          --task-definition $TASK_DEF_ARN \
+          --query 'taskDefinition.containerDefinitions[0].image' \
+          --output text \
+          --region ${{ inputs.aws-region }})
+
+        echo "Current ECR image: $CURRENT_IMAGE"
+        echo "current-image=$CURRENT_IMAGE" >> $GITHUB_OUTPUT
